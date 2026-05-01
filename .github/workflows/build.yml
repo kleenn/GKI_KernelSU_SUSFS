@@ -954,7 +954,7 @@ jobs:
             set -ex
             cd "$KERNEL_ROOT"
 
-# 🚀【仙之神级注入】：强制覆写网络协议栈、BBR及ZRAM保底宏
+            # 🚀【仙之神级注入】：强制覆写网络协议栈、BBR及ZRAM保底宏
             CONFIG_FILE="common/arch/arm64/configs/gki_defconfig"
             echo "开始物理注入满血网络矩阵与底层优化..."
             
