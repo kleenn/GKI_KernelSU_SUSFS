@@ -215,11 +215,18 @@ jobs:
               echo "ShirkNeko 仓库未找到分支 $SUSFS_BRANCH，回退到 simonpunk 原版..."
               git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
             fi
-          elif [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ]; then
-            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
-          else
-            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
-          fi
+            elif [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ]; then
+                git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
+                
+                # 🚀【仙之物理锚点】：强行打断时空，锁死旧版 SUSFS Commit！
+                echo "执行物理回档至 e1681bc4d6fa90203a1fd86f26a8583baa4433dc..."
+                cd susfs4ksu
+                git checkout e1681bc4d6fa90203a1fd86f26a8583baa4433dc
+                cd ..
+                
+            else
+                git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
+            fi
 
           CONFIG_FILE="config/config"
           if [ -f "$CONFIG_FILE" ]; then
