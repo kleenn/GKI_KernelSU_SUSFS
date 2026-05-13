@@ -443,21 +443,24 @@ jobs:
           fi
 
       - name: 修复 ReSukiSU 与 SUSFS 的时空断层 (白盒缝合)
-        working-directory: ${{ env.KERNEL_ROOT }}/KernelSU
         run: |
           echo "🚀 启动白盒手术：解除 fake_state 和 hide_running 的链接封印..."
-          FILE="kernel/feature/selinux_hide.c"
+          
+          # 使用绝对路径，无视当前所处的目录
+          FILE="$KERNEL_ROOT/KernelSU/kernel/feature/selinux_hide.c"
           
           if [ -f "$FILE" ]; then
-            # 1. 斩断 fake_state 的 static 封印锁链，并在下一行强行注入 EXPORT_SYMBOL
-            sed -i 's/static struct selinux_state fake_state;/struct selinux_state fake_state;\nEXPORT_SYMBOL(fake_state);/' "$FILE"
+            # 1. 斩断 fake_state 的 static 封印锁链，注入宏和导出指令
+            sed -i 's/static struct selinux_state fake_state;/struct selinux_state fake_state;\n#include <linux\/export.h>\nEXPORT_SYMBOL(fake_state);/' "$FILE"
             
-            # 2. 强行给 ksu_selinux_hide_running 注入 EXPORT_SYMBOL，防止被 LTO 优化器抹杀
+            # 2. 强行给 ksu_selinux_hide_running 注入 EXPORT_SYMBOL
             sed -i '/bool ksu_selinux_hide_running __read_mostly = false;/a EXPORT_SYMBOL(ksu_selinux_hide_running);' "$FILE"
             
             echo "✅ 缝合完毕！符号已强制暴露给 vmlinux！"
           else
-            echo "⚠️ 未找到 selinux_hide.c，跳过缝合。"
+            echo "❌ 致命错误：依然未找到 selinux_hide.c！正在打印物理目录结构以供排查："
+            ls -la $KERNEL_ROOT/KernelSU/kernel/feature/ || true
+            exit 1
           fi
 
       - name: 配置 SukiSU 管理器信息
