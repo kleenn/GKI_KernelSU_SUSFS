@@ -496,6 +496,7 @@ jobs:
           echo "已更新 get_ksu_version_full 模板: $VERSION_TEMPLATE"
 
       - name: 修复 ReSukiSU 与 SUSFS 的时空断层 (白盒缝合)
+        if: false
         run: |
           echo "🚀 启动白盒手术：解除 fake_state 和 hide_running 的链接封印..."
           
