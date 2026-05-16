@@ -356,7 +356,7 @@ jobs:
           variant_input="${{ inputs.ksu_variant }}"
 
           if [ "$variant_input" = "ReSukiSU" ]; then
-            BRANCH="-s dev"
+            BRANCH="-s main"
           else
             case "$branch_input" in
               "Stable(标准)")
@@ -431,7 +431,7 @@ jobs:
               ;;
             "ReSukiSU")
               echo "添加 ReSukiSU..."
-              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/dev/kernel/setup.sh" | bash $BRANCH
+              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash $BRANCH
               ;;
           esac
 
