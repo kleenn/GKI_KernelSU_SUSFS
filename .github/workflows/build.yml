@@ -1327,7 +1327,7 @@ jobs:
             fi
           fi
 
-      - name: 注入内核咽喉级 SELinux 拦截补丁 (通杀 SusFS/KSU)
+      - name: 注入内核咽喉级 SELinux 拦截补丁 (语法精准修复版)
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
           echo "启动内核咽喉级扫描，拦截 context_struct_compute_av ..."
@@ -1349,13 +1349,18 @@ jobs:
               sys.exit(0)
 
           # 确保头文件存在以支持 current_uid()
+          includes = ""
           if '<linux/cred.h>' not in content:
-              content = '#include <linux/cred.h>\n#include <linux/uidgid.h>\n' + content
+              includes += "#include <linux/cred.h>\n"
+          if '<linux/uidgid.h>' not in content:
+              includes += "#include <linux/uidgid.h>\n"
+          if includes:
+              content = includes + content
 
-          # 锁定深层咽喉函数：context_struct_compute_av
-          sig_match = re.search(r'static\s+void\s+context_struct_compute_av\s*\(', content)
+          # 【核心修复】：使用 [^;]*?\{ 确保只匹配带有左大括号的真实函数定义，跳过带有分号的前置声明
+          sig_match = re.search(r'static\s+void\s+context_struct_compute_av\s*\([^;]*?\{', content)
           if not sig_match:
-              print("::error::未在源码中找到 context_struct_compute_av 函数签名！")
+              print("::error::未在源码中找到 context_struct_compute_av 函数的实体定义！")
               sys.exit(1)
               
           start_idx = sig_match.start()
@@ -1373,10 +1378,10 @@ jobs:
 
           orig_func = content[start_idx:end_idx]
           
-          # 兼容不同版本内核传递 policydb 变量的方式 (参数传递或全局变量)
+          # 兼容参数传递
           pdb_var = "policydb" if "policydb" in orig_func.split('{')[0] else "&policydb"
 
-          # 锚点：该函数的最后一步操作必然是 type_attribute_bounds_av
+          # 锚点
           anchor_pattern = r"(type_attribute_bounds_av\s*\([\s\S]*?\);)"
           
           injection_template = r"""\1
@@ -1413,7 +1418,7 @@ jobs:
           patched_func, count = re.subn(anchor_pattern, injection_code, orig_func)
           
           if count == 0:
-              print("::error::注入失败：未能在函数体内找到锚点 'type_attribute_bounds_av'。")
+              print("::error::注入失败：未能在真正的函数体内找到锚点 'type_attribute_bounds_av'。")
               sys.exit(1)
 
           new_content = content[:start_idx] + patched_func + content[end_idx:]
@@ -1421,7 +1426,7 @@ jobs:
           with open(filepath, 'w') as f:
               f.write(new_content)
               
-          print("::notice::咽喉拦截补丁已成功部署！")
+          print("::notice::咽喉拦截补丁部署成功！")
           EOF
           python3 patch_selinux_choke.py
 
