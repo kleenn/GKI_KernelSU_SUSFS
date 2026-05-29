@@ -1327,16 +1327,17 @@ jobs:
             fi
           fi
 
-      - name: 注入内核咽喉级 SELinux 拦截补丁 (语法精准修复版)
+      - name: 注入 SELinux API 通信专用网关拦截 (防死机完美版)
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
-          echo "启动内核咽喉级扫描，拦截 context_struct_compute_av ..."
-          cat << 'EOF' > patch_selinux_choke.py
+          echo "启动安全隔离拦截，定位 sel_write_access API 网关..."
+          cat << 'EOF' > patch_selinuxfs.py
           import os
           import re
           import sys
 
-          filepath = 'common/security/selinux/ss/services.c'
+          # 目标变更为处理用户态 API 探针专用的通信接口文件
+          filepath = 'common/security/selinux/selinuxfs.c'
           if not os.path.exists(filepath):
               print(f"::error::致命错误：找不到目标文件 {filepath}")
               sys.exit(1)
@@ -1344,11 +1345,11 @@ jobs:
           with open(filepath, 'r') as f:
               content = f.read()
 
-          if "KSU CHOKE POINT FILTER START" in content:
-              print("::notice::咽喉拦截补丁已存在，跳过。")
+          if "API CHOKE POINT START" in content:
+              print("::notice::API 网关拦截补丁已存在，跳过。")
               sys.exit(0)
 
-          # 确保头文件存在以支持 current_uid()
+          # 确保获取 current_uid() 所需的头文件
           includes = ""
           if '<linux/cred.h>' not in content:
               includes += "#include <linux/cred.h>\n"
@@ -1357,78 +1358,34 @@ jobs:
           if includes:
               content = includes + content
 
-          # 【核心修复】：使用 [^;]*?\{ 确保只匹配带有左大括号的真实函数定义，跳过带有分号的前置声明
-          sig_match = re.search(r'static\s+void\s+context_struct_compute_av\s*\([^;]*?\{', content)
-          if not sig_match:
-              print("::error::未在源码中找到 context_struct_compute_av 函数的实体定义！")
-              sys.exit(1)
-              
-          start_idx = sig_match.start()
-          brace_start = content.find('{', start_idx)
-          
-          brace_count = 0
-          end_idx = -1
-          for i in range(brace_start, len(content)):
-              if content[i] == '{': brace_count += 1
-              elif content[i] == '}':
-                  brace_count -= 1
-                  if brace_count == 0:
-                      end_idx = i + 1
-                      break
+          # 锚点：锁定 sel_write_access 函数中最终给用户态返回结算结果的那一行
+          anchor = r"([ \t]*[a-zA-Z0-9_]+\s*=\s*scnprintf\s*\(\s*buf,\s*SIMPLE_TRANSACTION_LIMIT,\s*\"%x %x %x %x %u %x\",\s*avd\.allowed)"
 
-          orig_func = content[start_idx:end_idx]
-          
-          # 兼容参数传递
-          pdb_var = "policydb" if "policydb" in orig_func.split('{')[0] else "&policydb"
-
-          # 锚点
-          anchor_pattern = r"(type_attribute_bounds_av\s*\([\s\S]*?\);)"
-          
-          injection_template = r"""\1
-
-          	/* --- KSU CHOKE POINT FILTER START --- */
-          	if (scontext && tcontext && tclass && __kuid_val(current_uid()) >= 10000) {
-          		const char *stype = sym_name(PDB_VAR, SYM_TYPES, scontext->type - 1);
-          		const char *ttype = sym_name(PDB_VAR, SYM_TYPES, tcontext->type - 1);
-          		const char *tclass_name = sym_name(PDB_VAR, SYM_CLASSES, tclass - 1);
-
-          		if (stype && ttype && tclass_name) {
-          			if (strcmp(stype, "fsck_untrusted") == 0 && strcmp(tclass_name, "capability") == 0) {
-          				avd->allowed = 0;
-          			}
-          			else if ((strcmp(ttype, "ksu_file") == 0 || strcmp(ttype, "magisk_file") == 0 || strcmp(ttype, "lsposed_file") == 0 || strstr(ttype, "xposed") != NULL) && strcmp(tclass_name, "file") == 0) {
-          				avd->allowed = 0;
-          			}
-          			else if ((strcmp(ttype, "ksu") == 0 || strcmp(ttype, "magisk") == 0) && strcmp(tclass_name, "binder") == 0) {
-          				avd->allowed = 0;
-          			}
-          			else if (strcmp(stype, "zygote") == 0 && strstr(ttype, "adb_data_file") != NULL) {
-          				avd->allowed = 0;
-          			}
-          			else if (strcmp(stype, "system_server") == 0 && strcmp(tclass_name, "process") == 0) {
-          				avd->allowed = 0;
-          			}
+          # 注入代码：只对 UID >= 10000 的探针撒谎，绝不影响内核真实的权限结算和物理访问
+          injection = r"""
+          	/* --- API CHOKE POINT START --- */
+          	if (scon && tcon && __kuid_val(current_uid()) >= 10000) {
+          		if (strstr(scon, "fsck_untrusted") || strstr(scon, "ksu") || strstr(scon, "magisk") || strstr(scon, "system_server") ||
+          		    strstr(tcon, "fsck_untrusted") || strstr(tcon, "ksu") || strstr(tcon, "magisk") || strstr(tcon, "lsposed") || 
+          		    strstr(tcon, "xposed") || strstr(tcon, "droidspaces") || strstr(tcon, "system_data_file")) {
+          			avd.allowed = 0;
+          			avd.auditallow = 0;
           		}
-          		avd->auditallow = 0;
           	}
-          	/* --- KSU CHOKE POINT FILTER END --- */"""
-          
-          injection_code = injection_template.replace("PDB_VAR", pdb_var)
+          	/* --- API CHOKE POINT END --- */
+          \1"""
 
-          patched_func, count = re.subn(anchor_pattern, injection_code, orig_func)
+          new_content, count = re.subn(anchor, injection, content)
           
-          if count == 0:
-              print("::error::注入失败：未能在真正的函数体内找到锚点 'type_attribute_bounds_av'。")
+          if count > 0:
+              with open(filepath, 'w') as f:
+                  f.write(new_content)
+              print("::notice::API 网关拦截补丁部署成功！")
+          else:
+              print("::error::注入失败：未在 selinuxfs.c 找到格式化锚点。")
               sys.exit(1)
-
-          new_content = content[:start_idx] + patched_func + content[end_idx:]
-          
-          with open(filepath, 'w') as f:
-              f.write(new_content)
-              
-          print("::notice::咽喉拦截补丁部署成功！")
           EOF
-          python3 patch_selinux_choke.py
+          python3 patch_selinuxfs.py
 
       - name: 编译内核
         uses: nick-fields/retry@v4
