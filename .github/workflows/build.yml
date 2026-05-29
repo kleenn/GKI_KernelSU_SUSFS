@@ -475,66 +475,80 @@ jobs:
             echo "KSU_LATEST_COMMIT_DATE=未知" >> $GITHUB_ENV
           fi
 
-      - name: 篡改 KernelSU 底层隐藏逻辑 (劫持 KSU 探测器)
+      - name: 篡改 KernelSU/ReSukiSU 底层隐藏逻辑 (全域追踪版)
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
-          echo "扫描并篡改 KernelSU selinux_hide 拦截器..."
+          echo "启动全域追踪，扫描 ReSukiSU 拦截器锚点..."
           cat << 'EOF' > patch_ksu_hide.py
           import os
           import re
           import sys
 
-          # 寻找 KSU 源码中处理 SELinux 拦截的核心文件
-          ksu_selinux_dir = 'KernelSU/kernel/selinux'
+          # 扩大搜索范围，覆盖原版 KSU、ReSukiSU 以及直接集成到内核树的情况
+          search_dirs = ['KernelSU', 'common/drivers/kernelsu', 'common/security']
           target_file = None
 
-          if os.path.exists(ksu_selinux_dir):
-              for root, dirs, files in os.walk(ksu_selinux_dir):
-                  for file in files:
-                      if file.endswith('.c'):
-                          path = os.path.join(root, file)
-                          with open(path, 'r') as f:
-                              if 'scnprintf' in f.read() and 'avd.allowed' in open(path).read():
-                                  target_file = path
-                                  break
+          for d in search_dirs:
+              if os.path.exists(d):
+                  for root, dirs, files in os.walk(d):
+                      if '.git' in dirs: dirs.remove('.git') # 忽略 git 目录加速扫描
+                      for file in files:
+                          if file.endswith('.c'):
+                              path = os.path.join(root, file)
+                              try:
+                                  with open(path, 'r', encoding='utf-8') as f:
+                                      content = f.read()
+                                      # 核心指纹：SELinux 权限返回结果的 6 占位符格式化字符串
+                                      if '"%x %x %x %x %u %x"' in content and 'avd.allowed' in content:
+                                          target_file = path
+                                          break
+                              except Exception:
+                                  pass
+              if target_file:
+                  break
 
           if not target_file:
-              print("::error::未在 KernelSU 源码中找到 selinux_hide 输出锚点！")
+              print("::error::全域扫描失败：未在 ReSukiSU 源码中找到 SELinux access 格式化输出指纹！")
               sys.exit(1)
 
-          print(f"::notice::锁定 KSU 目标文件: {target_file}")
+          print(f"::notice::成功锁定 ReSukiSU 目标文件: {target_file}")
           
           with open(target_file, 'r') as f:
               content = f.read()
 
-          # 定位 KSU 格式化返回结果的关键行
-          anchor_pattern = r"(length\s*=\s*scnprintf\s*\(\s*buf,\s*SIMPLE_TRANSACTION_LIMIT,\s*\"%x %x %x %x %u %x\",\s*avd\.allowed)"
+          # 智能推断变量名，防止 ReSukiSU 更改了上游命名
+          v_scon = "scon" if "scon" in content else "scontext"
+          v_tcon = "tcon" if "tcon" in content else "tcontext"
+
+          # 锚点正则：兼容 scnprintf 和 snprintf
+          anchor_pattern = r"([ \t]*(?:[a-zA-Z0-9_]+\s*=\s*)?(?:scnprintf|snprintf)\s*\(\s*buf,\s*[a-zA-Z0-9_]+,\s*\"%x %x %x %x %u %x\")"
           
-          # 注入降维过滤逻辑：只要目标或源上下文包含敏感词，直接将 KSU 算出来的 allowed 强制归零
-          injection_code = r"""
+          injection_template = r"""
           	/* --- KSU HIDE FILTER START --- */
-          	if (scon && (strstr(scon, "fsck_untrusted") || strstr(scon, "ksu") || strstr(scon, "magisk") || strstr(scon, "system_server"))) { 
+          	if ({s} && (strstr({s}, "fsck_untrusted") || strstr({s}, "ksu") || strstr({s}, "magisk") || strstr({s}, "system_server"))) {{ 
           		avd.allowed = 0; 
           		avd.auditallow = 0;
-          	}
-          	if (tcon && (strstr(tcon, "fsck_untrusted") || strstr(tcon, "ksu") || strstr(tcon, "magisk") || strstr(tcon, "lsposed") || strstr(tcon, "xposed") || strstr(tcon, "droidspaces"))) { 
+          	}}
+          	if ({t} && (strstr({t}, "fsck_untrusted") || strstr({t}, "ksu") || strstr({t}, "magisk") || strstr({t}, "lsposed") || strstr({t}, "xposed") || strstr({t}, "droidspaces"))) {{ 
           		avd.allowed = 0; 
           		avd.auditallow = 0;
-          	}
+          	}}
           	/* --- KSU HIDE FILTER END --- */
-          	\1"""
+          \1"""
+          
+          injection_code = injection_template.format(s=v_scon, t=v_tcon)
 
           if "KSU HIDE FILTER START" not in content:
               new_content, count = re.subn(anchor_pattern, injection_code, content)
               if count > 0:
                   with open(target_file, 'w') as f:
                       f.write(new_content)
-                  print("::notice::成功将清洗逻辑注入 KernelSU 拦截器！")
+                  print("::notice::成功将清洗逻辑注入 ReSukiSU 拦截器！")
               else:
-                  print("::error::匹配 KSU 锚点失败，正则未命中。")
+                  print("::error::匹配格式化锚点失败，正则未命中。")
                   sys.exit(1)
           else:
-              print("清洗逻辑已存在。")
+              print("::notice::清洗逻辑已存在，跳过注入。")
           EOF
           python3 patch_ksu_hide.py
 
