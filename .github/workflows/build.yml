@@ -386,7 +386,7 @@ jobs:
 
           case "$variant_input" in
             "Official"|"ReSukiSU")
-              BRANCH="-s main"
+              BRANCH="-s sync-upstream"
               ;;
             "SukiSU")
               if [ "${{ inputs.enable_susfs }}" = "false" ]; then
@@ -456,7 +456,7 @@ jobs:
               ;;
             "ReSukiSU")
               echo "添加 ReSukiSU..."
-              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash $BRANCH
+              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/sync-upstream/kernel/setup.sh" | bash $BRANCH
               ;;
             *)
               if [ -z "$LEGACY_SUKISU_CONFIG" ]; then
