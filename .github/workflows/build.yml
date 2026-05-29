@@ -1391,13 +1391,19 @@ jobs:
 
           	/* --- CUSTOM SELINUX HIDE PATCH START --- */
           	if (scontext && tcontext && tclass) {
-          		const char *ctype = sym_name(policydb, SYM_TYPES, scontext->type - 1);
-          		if (ctype && strcmp(ctype, "app_zygote") == 0) {
-          			const char *stype = sym_name(policydb, SYM_TYPES, scontext->type - 1);
-          			const char *tclass_name = sym_name(policydb, SYM_CLASSES, tclass - 1);
-          			if (stype && tclass_name && strcmp(stype, "fsck_untrusted") == 0 && strcmp(tclass_name, "capability") == 0) {
-          				avd->allowed = 0;
-          				avd->auditallow = 0;
+          		/* 1. 获取当前发起查询的进程 (Caller) 的安全上下文 */
+          		struct context *caller_ctx = sidtab_search(sidtab, current_sid());
+          		if (caller_ctx) {
+          			const char *caller_type = sym_name(policydb, SYM_TYPES, caller_ctx->type - 1);
+          			/* 2. 判断提问者是不是 app_zygote */
+          			if (caller_type && strcmp(caller_type, "app_zygote") == 0) {
+          				const char *stype = sym_name(policydb, SYM_TYPES, scontext->type - 1);
+          				const char *tclass_name = sym_name(policydb, SYM_CLASSES, tclass - 1);
+          				/* 3. 如果是 app_zygote 在打听 fsck_untrusted 的能力，直接掐断 */
+          				if (stype && tclass_name && strcmp(stype, "fsck_untrusted") == 0 && strcmp(tclass_name, "capability") == 0) {
+          					avd->allowed = 0;
+          					avd->auditallow = 0;
+          				}
           			}
           		}
           	}
