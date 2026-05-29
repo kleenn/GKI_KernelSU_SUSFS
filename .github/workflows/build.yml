@@ -475,83 +475,6 @@ jobs:
             echo "KSU_LATEST_COMMIT_DATE=未知" >> $GITHUB_ENV
           fi
 
-      - name: 篡改 KernelSU/ReSukiSU 底层隐藏逻辑 (全域追踪版)
-        working-directory: ${{ env.KERNEL_ROOT }}
-        run: |
-          echo "启动全域追踪，扫描 ReSukiSU 拦截器锚点..."
-          cat << 'EOF' > patch_ksu_hide.py
-          import os
-          import re
-          import sys
-
-          # 扩大搜索范围，覆盖原版 KSU、ReSukiSU 以及直接集成到内核树的情况
-          search_dirs = ['KernelSU', 'common/drivers/kernelsu', 'common/security']
-          target_file = None
-
-          for d in search_dirs:
-              if os.path.exists(d):
-                  for root, dirs, files in os.walk(d):
-                      if '.git' in dirs: dirs.remove('.git') # 忽略 git 目录加速扫描
-                      for file in files:
-                          if file.endswith('.c'):
-                              path = os.path.join(root, file)
-                              try:
-                                  with open(path, 'r', encoding='utf-8') as f:
-                                      content = f.read()
-                                      # 核心指纹：SELinux 权限返回结果的 6 占位符格式化字符串
-                                      if '"%x %x %x %x %u %x"' in content and 'avd.allowed' in content:
-                                          target_file = path
-                                          break
-                              except Exception:
-                                  pass
-              if target_file:
-                  break
-
-          if not target_file:
-              print("::error::全域扫描失败：未在 ReSukiSU 源码中找到 SELinux access 格式化输出指纹！")
-              sys.exit(1)
-
-          print(f"::notice::成功锁定 ReSukiSU 目标文件: {target_file}")
-          
-          with open(target_file, 'r') as f:
-              content = f.read()
-
-          # 智能推断变量名，防止 ReSukiSU 更改了上游命名
-          v_scon = "scon" if "scon" in content else "scontext"
-          v_tcon = "tcon" if "tcon" in content else "tcontext"
-
-          # 锚点正则：兼容 scnprintf 和 snprintf
-          anchor_pattern = r"([ \t]*(?:[a-zA-Z0-9_]+\s*=\s*)?(?:scnprintf|snprintf)\s*\(\s*buf,\s*[a-zA-Z0-9_]+,\s*\"%x %x %x %x %u %x\")"
-          
-          injection_template = r"""
-          	/* --- KSU HIDE FILTER START --- */
-          	if ({s} && (strstr({s}, "fsck_untrusted") || strstr({s}, "ksu") || strstr({s}, "magisk") || strstr({s}, "system_server"))) {{ 
-          		avd.allowed = 0; 
-          		avd.auditallow = 0;
-          	}}
-          	if ({t} && (strstr({t}, "fsck_untrusted") || strstr({t}, "ksu") || strstr({t}, "magisk") || strstr({t}, "lsposed") || strstr({t}, "xposed") || strstr({t}, "droidspaces"))) {{ 
-          		avd.allowed = 0; 
-          		avd.auditallow = 0;
-          	}}
-          	/* --- KSU HIDE FILTER END --- */
-          \1"""
-          
-          injection_code = injection_template.format(s=v_scon, t=v_tcon)
-
-          if "KSU HIDE FILTER START" not in content:
-              new_content, count = re.subn(anchor_pattern, injection_code, content)
-              if count > 0:
-                  with open(target_file, 'w') as f:
-                      f.write(new_content)
-                  print("::notice::成功将清洗逻辑注入 ReSukiSU 拦截器！")
-              else:
-                  print("::error::匹配格式化锚点失败，正则未命中。")
-                  sys.exit(1)
-          else:
-              print("::notice::清洗逻辑已存在，跳过注入。")
-          EOF
-          python3 patch_ksu_hide.py
-
       - name: 配置 SukiSU 管理器信息
         if: inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'SukiSU(40726)' || inputs.ksu_variant == 'SukiSU(40548)'
         working-directory: ${{ env.KERNEL_ROOT }}/KernelSU
@@ -1404,13 +1327,13 @@ jobs:
             fi
           fi
 
-      - name: 注入 SELinux 终极隐藏补丁 (可视化审计版)
+      - name: 注入内核咽喉级 SELinux 拦截补丁 (通杀 SusFS/KSU)
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
-          echo "初始化 SELinux 源码审查与动态修补程序..."
-          cat << 'EOF' > patch_selinux.py
-          import re
+          echo "启动内核咽喉级扫描，拦截 context_struct_compute_av ..."
+          cat << 'EOF' > patch_selinux_choke.py
           import os
+          import re
           import sys
 
           filepath = 'common/security/selinux/ss/services.c'
@@ -1421,98 +1344,86 @@ jobs:
           with open(filepath, 'r') as f:
               content = f.read()
 
-          # ==========================================
-          # 步骤一：提取并打印原始函数上下文
-          # ==========================================
-          # 动态寻找函数签名
-          sig_match = re.search(r'void\s+security_compute_av_user\s*\(', content)
+          if "KSU CHOKE POINT FILTER START" in content:
+              print("::notice::咽喉拦截补丁已存在，跳过。")
+              sys.exit(0)
+
+          # 确保头文件存在以支持 current_uid()
+          if '<linux/cred.h>' not in content:
+              content = '#include <linux/cred.h>\n#include <linux/uidgid.h>\n' + content
+
+          # 锁定深层咽喉函数：context_struct_compute_av
+          sig_match = re.search(r'static\s+void\s+context_struct_compute_av\s*\(', content)
           if not sig_match:
-              print("::error::致命错误：在源码中未找到 security_compute_av_user 函数签名！")
+              print("::error::未在源码中找到 context_struct_compute_av 函数签名！")
               sys.exit(1)
               
           start_idx = sig_match.start()
           brace_start = content.find('{', start_idx)
-          if brace_start == -1:
-              print("::error::语法解析失败：未找到函数的左大括号。")
-              sys.exit(1)
-
-          # 利用括号计数法，精准提取完整的函数体（无视内部多行换行和条件编译）
+          
           brace_count = 0
           end_idx = -1
           for i in range(brace_start, len(content)):
-              if content[i] == '{': 
-                  brace_count += 1
+              if content[i] == '{': brace_count += 1
               elif content[i] == '}':
                   brace_count -= 1
                   if brace_count == 0:
                       end_idx = i + 1
                       break
 
-          if end_idx == -1:
-              print("::error::语法解析失败：大括号未闭合，无法划定函数边界。")
-              sys.exit(1)
-
           orig_func = content[start_idx:end_idx]
           
-          print("\n::group::[审计日志] 步骤一：原始 security_compute_av_user 函数代码")
-          print(orig_func)
-          print("::endgroup::\n")
+          # 兼容不同版本内核传递 policydb 变量的方式 (参数传递或全局变量)
+          pdb_var = "policydb" if "policydb" in orig_func.split('{')[0] else "&policydb"
 
-          # ==========================================
-          # 步骤二：在安全的局部作用域内执行修补
-          # ==========================================
-          # 锚点正则：兼容参数换行，寻找 context_struct_compute_av(..., NULL);
-          anchor_pattern = r"(context_struct_compute_av\s*\([\s\S]*?,\s*NULL\s*\);)"
+          # 锚点：该函数的最后一步操作必然是 type_attribute_bounds_av
+          anchor_pattern = r"(type_attribute_bounds_av\s*\([\s\S]*?\);)"
           
-          injection_code = r"""\1
+          injection_template = r"""\1
 
-          	/* --- CUSTOM SELINUX HIDE PATCH START --- */
-          	if (scontext && tcontext && tclass) {
-          		/* 1. 获取当前发起查询的进程 (Caller) 的安全上下文 */
-          		struct context *caller_ctx = sidtab_search(sidtab, current_sid());
-          		if (caller_ctx) {
-          			const char *caller_type = sym_name(policydb, SYM_TYPES, caller_ctx->type - 1);
-          			/* 2. 判断提问者是不是 app_zygote */
-          			if (caller_type && strcmp(caller_type, "app_zygote") == 0) {
-          				const char *stype = sym_name(policydb, SYM_TYPES, scontext->type - 1);
-          				const char *tclass_name = sym_name(policydb, SYM_CLASSES, tclass - 1);
-          				/* 3. 如果是 app_zygote 在打听 fsck_untrusted 的能力，直接掐断 */
-          				if (stype && tclass_name && strcmp(stype, "fsck_untrusted") == 0 && strcmp(tclass_name, "capability") == 0) {
-          					avd->allowed = 0;
-          					avd->auditallow = 0;
-          				}
+          	/* --- KSU CHOKE POINT FILTER START --- */
+          	if (scontext && tcontext && tclass && __kuid_val(current_uid()) >= 10000) {
+          		const char *stype = sym_name(PDB_VAR, SYM_TYPES, scontext->type - 1);
+          		const char *ttype = sym_name(PDB_VAR, SYM_TYPES, tcontext->type - 1);
+          		const char *tclass_name = sym_name(PDB_VAR, SYM_CLASSES, tclass - 1);
+
+          		if (stype && ttype && tclass_name) {
+          			if (strcmp(stype, "fsck_untrusted") == 0 && strcmp(tclass_name, "capability") == 0) {
+          				avd->allowed = 0;
+          			}
+          			else if ((strcmp(ttype, "ksu_file") == 0 || strcmp(ttype, "magisk_file") == 0 || strcmp(ttype, "lsposed_file") == 0 || strstr(ttype, "xposed") != NULL) && strcmp(tclass_name, "file") == 0) {
+          				avd->allowed = 0;
+          			}
+          			else if ((strcmp(ttype, "ksu") == 0 || strcmp(ttype, "magisk") == 0) && strcmp(tclass_name, "binder") == 0) {
+          				avd->allowed = 0;
+          			}
+          			else if (strcmp(stype, "zygote") == 0 && strstr(ttype, "adb_data_file") != NULL) {
+          				avd->allowed = 0;
+          			}
+          			else if (strcmp(stype, "system_server") == 0 && strcmp(tclass_name, "process") == 0) {
+          				avd->allowed = 0;
           			}
           		}
+          		avd->auditallow = 0;
           	}
-          	/* --- CUSTOM SELINUX HIDE PATCH END --- */"""
+          	/* --- KSU CHOKE POINT FILTER END --- */"""
           
-          if "CUSTOM SELINUX HIDE PATCH START" in orig_func:
-              print("::notice::检测到补丁已存在，无需重复注入。")
-              sys.exit(0)
+          injection_code = injection_template.replace("PDB_VAR", pdb_var)
 
-          # 仅在提取出的函数体内进行替换，彻底杜绝污染全局文件的可能
           patched_func, count = re.subn(anchor_pattern, injection_code, orig_func)
           
           if count == 0:
-              print("::error::注入失败：未能在函数体内找到锚点 'context_struct_compute_av(..., NULL);'。请检查上方的原始函数输出。")
+              print("::error::注入失败：未能在函数体内找到锚点 'type_attribute_bounds_av'。")
               sys.exit(1)
 
-          # ==========================================
-          # 步骤三：验证修正并写回文件
-          # ==========================================
-          print("::group::[审计日志] 步骤三：注入补丁后的函数代码验证")
-          print(patched_func)
-          print("::endgroup::\n")
-          
-          # 将修改后的函数拼接回原文件内容
           new_content = content[:start_idx] + patched_func + content[end_idx:]
           
           with open(filepath, 'w') as f:
               f.write(new_content)
               
-          print("::notice::SELinux 底层隐藏规则注入成功！")
+          print("::notice::咽喉拦截补丁已成功部署！")
           EOF
-          python3 patch_selinux.py
+          python3 patch_selinux_choke.py
 
       - name: 编译内核
         uses: nick-fields/retry@v4
