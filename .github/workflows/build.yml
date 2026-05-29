@@ -1327,6 +1327,110 @@ jobs:
             fi
           fi
 
+      - name: 注入 SELinux 终极隐藏补丁 (可视化审计版)
+        working-directory: ${{ env.KERNEL_ROOT }}
+        run: |
+          echo "初始化 SELinux 源码审查与动态修补程序..."
+          cat << 'EOF' > patch_selinux.py
+          import re
+          import os
+          import sys
+
+          filepath = 'common/security/selinux/ss/services.c'
+          if not os.path.exists(filepath):
+              print(f"::error::致命错误：找不到目标文件 {filepath}")
+              sys.exit(1)
+
+          with open(filepath, 'r') as f:
+              content = f.read()
+
+          # ==========================================
+          # 步骤一：提取并打印原始函数上下文
+          # ==========================================
+          # 动态寻找函数签名
+          sig_match = re.search(r'void\s+security_compute_av_user\s*\(', content)
+          if not sig_match:
+              print("::error::致命错误：在源码中未找到 security_compute_av_user 函数签名！")
+              sys.exit(1)
+              
+          start_idx = sig_match.start()
+          brace_start = content.find('{', start_idx)
+          if brace_start == -1:
+              print("::error::语法解析失败：未找到函数的左大括号。")
+              sys.exit(1)
+
+          # 利用括号计数法，精准提取完整的函数体（无视内部多行换行和条件编译）
+          brace_count = 0
+          end_idx = -1
+          for i in range(brace_start, len(content)):
+              if content[i] == '{': 
+                  brace_count += 1
+              elif content[i] == '}':
+                  brace_count -= 1
+                  if brace_count == 0:
+                      end_idx = i + 1
+                      break
+
+          if end_idx == -1:
+              print("::error::语法解析失败：大括号未闭合，无法划定函数边界。")
+              sys.exit(1)
+
+          orig_func = content[start_idx:end_idx]
+          
+          print("\n::group::[审计日志] 步骤一：原始 security_compute_av_user 函数代码")
+          print(orig_func)
+          print("::endgroup::\n")
+
+          # ==========================================
+          # 步骤二：在安全的局部作用域内执行修补
+          # ==========================================
+          # 锚点正则：兼容参数换行，寻找 context_struct_compute_av(..., NULL);
+          anchor_pattern = r"(context_struct_compute_av\s*\([\s\S]*?,\s*NULL\s*\);)"
+          
+          injection_code = r"""\1
+
+          	/* --- CUSTOM SELINUX HIDE PATCH START --- */
+          	if (scontext && tcontext && tclass) {
+          		const char *ctype = sym_name(policydb, SYM_TYPES, scontext->type - 1);
+          		if (ctype && strcmp(ctype, "app_zygote") == 0) {
+          			const char *stype = sym_name(policydb, SYM_TYPES, scontext->type - 1);
+          			const char *tclass_name = sym_name(policydb, SYM_CLASSES, tclass - 1);
+          			if (stype && tclass_name && strcmp(stype, "fsck_untrusted") == 0 && strcmp(tclass_name, "capability") == 0) {
+          				avd->allowed = 0;
+          				avd->auditallow = 0;
+          			}
+          		}
+          	}
+          	/* --- CUSTOM SELINUX HIDE PATCH END --- */"""
+          
+          if "CUSTOM SELINUX HIDE PATCH START" in orig_func:
+              print("::notice::检测到补丁已存在，无需重复注入。")
+              sys.exit(0)
+
+          # 仅在提取出的函数体内进行替换，彻底杜绝污染全局文件的可能
+          patched_func, count = re.subn(anchor_pattern, injection_code, orig_func)
+          
+          if count == 0:
+              print("::error::注入失败：未能在函数体内找到锚点 'context_struct_compute_av(..., NULL);'。请检查上方的原始函数输出。")
+              sys.exit(1)
+
+          # ==========================================
+          # 步骤三：验证修正并写回文件
+          # ==========================================
+          print("::group::[审计日志] 步骤三：注入补丁后的函数代码验证")
+          print(patched_func)
+          print("::endgroup::\n")
+          
+          # 将修改后的函数拼接回原文件内容
+          new_content = content[:start_idx] + patched_func + content[end_idx:]
+          
+          with open(filepath, 'w') as f:
+              f.write(new_content)
+              
+          print("::notice::SELinux 底层隐藏规则注入成功！")
+          EOF
+          python3 patch_selinux.py
+
       - name: 编译内核
         uses: nick-fields/retry@v4
         with:
